@@ -44,12 +44,36 @@ release_time = 0.050
 # acoustic instrument behaves.
 single_note_dbfs = -12.0
 
-# Master volume, on a traditional 0-10 scale: 10 plays a
-# single note at `single_note_dbfs`. `output_gain` is the
-# resulting linear gain. Both are overridable on the command
-# line via `--volume`.
-volume = 10.0
-output_gain = (volume / 10.0) * 10.0 ** (single_note_dbfs / 20.0)
+# The volume control is dB-linear and spans this many dB,
+# from full volume (`single_note_dbfs`) down toward silence.
+volume_range_db = 60.0
+
+# Master volume as a normalized position, 0.0 to 1.0. 1.0
+# plays a single note at `single_note_dbfs`; 0.0 is silence.
+# Set by `--volume` and, live, by MIDI CC#7. Defaults to 0.7
+# (volume 7 on the 0-10 scale), leaving room to turn up.
+volume_position = 0.7
+
+# Convert a normalized volume position (0.0-1.0) to a linear
+# output gain. The mapping is dB-linear over `volume_range_db`
+# decibels; position 0.0 is exact silence.
+def volume_to_gain(position):
+    if position <= 0.0:
+        return 0.0
+    db = single_note_dbfs - (1.0 - position) * volume_range_db
+    return 10.0 ** (db / 20.0)
+
+# Current output gain, recomputed whenever the volume changes.
+output_gain = volume_to_gain(volume_position)
+
+# Soft-takeover state for the MIDI CC#7 volume knob. The
+# knob's physical position need not match the synth volume,
+# so an incoming CC#7 is ignored until the knob sweeps
+# through the current volume — only then does it take over.
+volume_knob_engaged = False
+# The knob's previous CC value (0-127), or None before any
+# CC#7 has arrived; used to detect that sweep.
+volume_knob_last = None
 
 # Soft-clip knee. The summed mix passes through unchanged
 # below this level; above it, peaks are smoothly rounded
@@ -252,6 +276,10 @@ def output_callback(out_data, frame_count, time_info, status):
             for note in playing_notes:
                 if note.key == mesg.note and note.release_time_remaining is None:
                     note.release()
+        elif mesg_type == 'control_change':
+            # The only queued control change is CC#7 volume.
+            if mesg.control == 7:
+                handle_volume_cc(mesg.value)
         else:
             raise Exception(f"bad command: {mesg_type} {mesg}")
 
@@ -308,6 +336,11 @@ def handle_midi(mesg):
         if mesg.control == 23:
             print('stop')
             return False
+        # CC#7: channel volume. Routed through the command
+        # queue so it is serialized with note events and
+        # applied on the audio thread (see handle_volume_cc).
+        elif mesg.control == 7:
+            command_queue.put(('control_change', mesg))
         # Unknown control changes are logged and ignored.
         else:
             print('control', mesg.control, mesg.value)
@@ -317,6 +350,35 @@ def handle_midi(mesg):
     else:
         print('unknown MIDI message', mesg)
     return True
+
+# Handle a CC#7 (channel volume) value with soft takeover.
+# Invoked by the audio callback as it drains the command
+# queue, so the volume state is owned by the audio thread.
+# The incoming value is ignored until the knob sweeps across
+# the synth's current volume; from then on the knob sets the
+# volume directly. This avoids a jump when the knob's
+# physical position does not match the synth volume.
+def handle_volume_cc(value):
+    global volume_position, output_gain, volume_knob_engaged, volume_knob_last
+
+    if not volume_knob_engaged:
+        # Engage once the knob sweeps across the current
+        # volume. `value` and the previous reading bracket
+        # the swept range; the volume on the same 0-127 scale
+        # is volume_position * 127.
+        current = volume_position * 127.0
+        if volume_knob_last is not None:
+            lo, hi = sorted((volume_knob_last, value))
+            if lo <= current <= hi:
+                volume_knob_engaged = True
+                print('volume knob engaged')
+        volume_knob_last = value
+        if not volume_knob_engaged:
+            return
+
+    # The knob is in control: set the volume from the CC value.
+    volume_position = value / 127.0
+    output_gain = volume_to_gain(volume_position)
 
 # Block waiting for the controller (keyboard) to send a MIDI
 # message, then handle it. Return False if the synthesizer
@@ -345,7 +407,7 @@ def open_controller(args):
 # Parse arguments, open hardware, and run the synthesizer
 # until its stop key is pressed.
 def main():
-    global oscillator, volume, output_gain, attack_time, release_time
+    global oscillator, volume_position, output_gain, attack_time, release_time
 
     ap = argparse.ArgumentParser(description="Polyphonic MIDI synthesizer.")
     ap.add_argument(
@@ -357,7 +419,7 @@ def main():
     ap.add_argument(
         "--volume",
         type=float,
-        default=volume,
+        default=volume_position * 10.0,
         help="master volume, 0-10 (default: %(default)g)",
     )
     ap.add_argument(
@@ -404,8 +466,8 @@ def main():
     oscillator = oscillators[args.wave]
 
     # Apply volume and envelope settings from the command line.
-    volume = min(10.0, max(0.0, args.volume))
-    output_gain = (volume / 10.0) * 10.0 ** (single_note_dbfs / 20.0)
+    volume_position = min(1.0, max(0.0, args.volume / 10.0))
+    output_gain = volume_to_gain(volume_position)
     attack_time = max(0.0, args.attack) / 1000.0
     release_time = max(0.0, args.release) / 1000.0
 
