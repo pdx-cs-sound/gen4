@@ -21,7 +21,7 @@ sample_rate = 48000
 
 # Blocksize in samples to process. This provides pretty good
 # latency. Slower machines may need larger numbers.
-blocksize = 1024
+blocksize = 128
 
 # Print MIDI note events if True.
 log_notes = True
