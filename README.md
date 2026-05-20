@@ -1,11 +1,11 @@
-# gen4: monophonic MIDI synthesizer in Python
+# gen4: polyphonic MIDI synthesizer in Python
 Bart Massey 2026
 
 This toy synthesizer is intended to teach the basics of
-synthesizer-building. It is monophonic: only one note
-sounds at a time, with last-note priority. Sound generation
-is driven by the `sounddevice` audio callback; MIDI input
-arrives via `mido` with `python-rtmidi`.
+synthesizer-building. It is polyphonic: any number of notes
+can sound at once. Sound generation is driven by the
+`sounddevice` audio callback; MIDI input arrives via `mido`
+with `python-rtmidi`.
 
 Some of the code is adapted from the teaching synthesizers
 [`misy`](https://github.com/pdx-cs-sound/misy) and `rhosy`.

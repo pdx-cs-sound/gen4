@@ -1,10 +1,10 @@
-# gen4: Monophonic MIDI Synthesizer
+# gen4: Polyphonic MIDI Synthesizer
 # Bart Massey 2026
 
 # This very simple synthesizer is intended primarily as a
-# demo of MIDI and synthesis. It is monophonic: only one
-# note sounds at a time, with last-note priority. The
-# output waveform is selectable at startup.
+# demo of MIDI and synthesis. It is polyphonic: any number
+# of notes can sound at once. The output waveform is
+# selectable at startup.
 #
 # Some of the code is adapted from the teaching synthesizers
 # `misy` (https://github.com/pdx-cs-sound/misy) and
@@ -126,7 +126,13 @@ oscillator = oscillators[args.wave]
 def key_to_freq(key):
     return 440 * 2 ** ((key - 69) / 12)
 
-# Representation of the note currently being played.
+# List of currently playing notes. There may be more than
+# one note with the same key number at once: a key can be
+# struck again while an earlier note on that key is still
+# finishing its release.
+playing_notes = []
+
+# Representation of a note currently being played.
 class Note:
     def __init__(self, key):
         self.key = key
@@ -138,6 +144,10 @@ class Note:
     # Note has been released. Start the release ramp.
     def release(self):
         self.release_time_remaining = release_time
+
+    # Remove this note from the list of playing notes.
+    def remove(self):
+        playing_notes.remove(self)
 
     # Accept a time linspace to generate samples in. Return
     # that many samples of the note being played, or None if
@@ -155,7 +165,9 @@ class Note:
             # Do release part of AR envelope.
             release_time_remaining = self.release_time_remaining
             if release_time_remaining <= 0:
+                # Note has played out: drop it from the mix.
                 self.playing = False
+                self.remove()
                 return None
             # Gain at the starting time, per a linear ramp.
             start_gain = release_time_remaining / release_time
@@ -197,9 +209,6 @@ class Note:
 
         return samples
 
-# The note currently being played, or None.
-current_note = None
-
 # Queue of MIDI messages for state changes, passed from the
 # main thread to the audio callback.
 command_queue = queue.SimpleQueue()
@@ -208,7 +217,7 @@ command_queue = queue.SimpleQueue()
 # samples to output. It's the heart of sound generation in
 # the synth.
 def output_callback(out_data, frame_count, time_info, status):
-    global current_note, sample_clock
+    global sample_clock
 
     # A non-None status indicates that something has
     # happened with sound output that shouldn't have. This
@@ -221,27 +230,28 @@ def output_callback(out_data, frame_count, time_info, status):
     while not command_queue.empty():
         mesg_type, mesg = command_queue.get()
         if mesg_type == 'note_on':
-            # Last-note priority: a new note replaces any
-            # currently sounding note immediately.
-            current_note = Note(mesg.note)
+            playing_notes.append(Note(mesg.note))
         elif mesg_type == 'note_off':
-            # Release only if this is the sounding note.
-            # No fallback to other held keys.
-            if current_note is not None and current_note.key == mesg.note:
-                current_note.release()
+            # Release every held (not yet released) note on
+            # this key. Notes already in release are left
+            # alone to finish.
+            for note in playing_notes:
+                if note.key == mesg.note and note.release_time_remaining is None:
+                    note.release()
         else:
             raise Exception(f"bad command: {mesg_type} {mesg}")
 
     # Start with silence and maybe work up.
     samples = np.zeros(frame_count, dtype=np.float32)
 
-    if current_note is not None:
+    if playing_notes:
         t = sample_times(frame_count)
-        note_samples = current_note.samples(t)
-        if note_samples is None:
-            current_note = None
-        else:
-            samples += note_samples
+        # Iterate over a snapshot: a played-out note removes
+        # itself from `playing_notes` during `samples()`.
+        for note in list(playing_notes):
+            note_samples = note.samples(t)
+            if note_samples is not None:
+                samples += note_samples
 
     samples *= output_gain
 
