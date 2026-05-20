@@ -56,7 +56,7 @@ def render(events, seconds, wave="sine", sample_rate=48000, blocksize=128):
 
     nblocks = int(np.ceil(seconds * sample_rate / blocksize))
     audio = np.zeros(nblocks * blocksize, dtype=np.float32)
-    buffer = np.zeros((blocksize, 1), dtype=np.float32)
+    buffer = np.zeros((blocksize, gen4.output_channels), dtype=np.float32)
 
     for b in range(nblocks):
         # Deliver every event whose time has arrived by the

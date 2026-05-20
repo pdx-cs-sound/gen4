@@ -39,6 +39,11 @@ release_time = 0.1
 # Fixed output gain. Leaves headroom and avoids clipping.
 output_gain = 0.25
 
+# Number of output channels. The synth mix is mono; it is
+# duplicated into this many channels so that the sound is
+# heard on every output (some setups carry only one).
+output_channels = 2
+
 # Known MIDI controllers to auto-detect.
 controllers = {
     'USB Oxygen 8 v2 MIDI 1',
@@ -230,9 +235,11 @@ def output_callback(out_data, frame_count, time_info, status):
 
     samples *= output_gain
 
-    # Must write into the existing array rather than
-    # accidentally copying over the parameter.
-    out_data[:] = np.reshape(samples, (frame_count, 1))
+    # Duplicate the mono mix into each output channel of the
+    # callback's output array. Write into the existing array
+    # rather than accidentally copying over the parameter.
+    for channel in range(output_channels):
+        out_data[:, channel] = samples
 
     # Bump the sample clock for next cycle.
     sample_clock += frame_count
@@ -348,7 +355,7 @@ def main():
     # Start audio playing. Must keep up with output from here on.
     output_stream = sounddevice.OutputStream(
         samplerate=sample_rate,
-        channels=1,
+        channels=output_channels,
         blocksize=blocksize,
         device=output_device,
         callback=output_callback,
