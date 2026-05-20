@@ -22,7 +22,8 @@ you need `python-rtmidi`.
 ## Usage
 
     python gen4.py [--wave {sine,triangle,square,saw}] \
-                   [--controller NAME]
+                   [--controller NAME] [--device DEVICE] \
+                   [--list-devices]
 
 - `--wave` picks the output waveform for the session
   (default: `sine`).
@@ -30,6 +31,11 @@ you need `python-rtmidi`.
   `gen4` auto-detects a known controller; failing that, it
   opens a virtual input port named `gen4` that you can
   connect a controller to with your system's MIDI routing.
+- `--device` selects the audio output device, by name
+  substring or numeric index. If omitted, the system
+  default output is used.
+- `--list-devices` prints the available audio devices and
+  exits.
 
 The known controller name is currently hard-coded; you will
 likely want to edit the `controllers` set in `gen4.py`.

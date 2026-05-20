@@ -51,7 +51,29 @@ ap.add_argument(
     "--controller",
     help="MIDI input port name (default: auto-detect)",
 )
+ap.add_argument(
+    "--device",
+    help="audio output device, by name substring or index "
+         "(default: system default)",
+)
+ap.add_argument(
+    "--list-devices",
+    action="store_true",
+    help="list available audio devices and exit",
+)
 args = ap.parse_args()
+
+# List audio devices and exit, if requested.
+if args.list_devices:
+    print(sounddevice.query_devices())
+    exit(0)
+
+# Audio output device. An all-digit string is treated as a
+# device index; anything else is matched against device
+# names by `sounddevice`. None selects the system default.
+output_device = args.device
+if output_device is not None and output_device.isdigit():
+    output_device = int(output_device)
 
 # This count of the number of samples output so far is used
 # to make sure that waveforms are generated with the right
@@ -295,6 +317,7 @@ output_stream = sounddevice.OutputStream(
     samplerate=sample_rate,
     channels=1,
     blocksize=blocksize,
+    device=output_device,
     callback=output_callback,
 )
 output_stream.start()
