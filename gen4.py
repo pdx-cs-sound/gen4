@@ -36,14 +36,22 @@ attack_time = 0.020
 # Release time in seconds.
 release_time = 0.1
 
-# Target output level for a single note, in dBFS. The
-# output gain is derived from this so that one note alone
-# peaks at this level. A `tanh` soft clipper in the callback
-# then keeps louder chords from ever clipping, while leaving
-# quiet playing essentially linear: this is the synth's
-# "compression" for many-note polyphony.
-single_note_dbfs = -9.0
-output_gain = float(np.arctanh(10.0 ** (single_note_dbfs / 20.0)))
+# Output level for a single note, in dBFS. Voices are summed
+# at this fixed gain — there is no dynamic gain on the voice
+# bus. This is how real synths stage polyphony: a fixed
+# per-voice level plus headroom (and a master volume), so
+# more notes are simply louder, the way an acoustic
+# instrument behaves.
+single_note_dbfs = -12.0
+output_gain = 10.0 ** (single_note_dbfs / 20.0)
+
+# Soft-clip knee. The summed mix passes through unchanged
+# below this level; above it, peaks are smoothly rounded
+# toward full scale instead of hard-clipping. This is the
+# many-note safety net — a memoryless waveshaper, so it has
+# no time constants, no latency and no state, and therefore
+# cannot click or pump.
+soft_clip_knee = 0.75
 
 # Number of output channels. The synth mix is mono; it is
 # duplicated into this many channels so that the sound is
@@ -195,6 +203,20 @@ class Note:
 
         return samples
 
+# Memoryless soft clipper. Passes |samples| <= soft_clip_knee
+# through unchanged; above the knee, smoothly compresses the
+# signal toward +/-1 so the output never exceeds full scale.
+# The mapping is continuous in value and slope at the knee.
+# Being memoryless (each output sample depends only on the
+# matching input sample) it adds no latency and cannot click.
+def soft_clip(samples):
+    knee = soft_clip_knee
+    span = 1.0 - knee
+    magnitude = np.abs(samples)
+    excess = np.maximum(magnitude - knee, 0.0)
+    shaped = np.sign(samples) * (knee + span * np.tanh(excess / span))
+    return np.where(magnitude > knee, shaped, samples)
+
 # Queue of MIDI messages for state changes, passed from the
 # main thread to the audio callback.
 command_queue = queue.SimpleQueue()
@@ -239,11 +261,9 @@ def output_callback(out_data, frame_count, time_info, status):
             if note_samples is not None:
                 samples += note_samples
 
-    # Apply the output gain and soft-clip the mix. `tanh`
-    # never reaches 1.0, so any number of notes can sound at
-    # once without clipping; for a single note it is nearly
-    # linear, so quiet playing is essentially unaffected.
-    samples = np.tanh(output_gain * samples)
+    # Apply the fixed output gain, then soft-clip the mix so
+    # a dense chord rounds off gently instead of hard-clipping.
+    samples = soft_clip(output_gain * samples)
 
     # Duplicate the mono mix into each output channel of the
     # callback's output array. Write into the existing array
