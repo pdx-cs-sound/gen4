@@ -31,19 +31,25 @@ blocksize = 128
 # Print MIDI note events if True.
 log_notes = True
 
-# Attack time in seconds.
-attack_time = 0.020
-# Release time in seconds.
-release_time = 0.1
+# Note attack and release times in seconds. These are short
+# defaults; both are overridable on the command line.
+attack_time = 0.005
+release_time = 0.050
 
-# Output level for a single note, in dBFS. Voices are summed
-# at this fixed gain — there is no dynamic gain on the voice
-# bus. This is how real synths stage polyphony: a fixed
-# per-voice level plus headroom (and a master volume), so
-# more notes are simply louder, the way an acoustic
-# instrument behaves.
+# Output level for a single note at full volume, in dBFS.
+# Voices are summed at a fixed gain — there is no dynamic
+# gain on the voice bus. This is how real synths stage
+# polyphony: a fixed per-voice level plus headroom and a
+# master volume, so more notes are simply louder, the way an
+# acoustic instrument behaves.
 single_note_dbfs = -12.0
-output_gain = 10.0 ** (single_note_dbfs / 20.0)
+
+# Master volume, on a traditional 0-10 scale: 10 plays a
+# single note at `single_note_dbfs`. `output_gain` is the
+# resulting linear gain. Both are overridable on the command
+# line via `--volume`.
+volume = 10.0
+output_gain = (volume / 10.0) * 10.0 ** (single_note_dbfs / 20.0)
 
 # Soft-clip knee. The summed mix passes through unchanged
 # below this level; above it, peaks are smoothly rounded
@@ -339,7 +345,7 @@ def open_controller(args):
 # Parse arguments, open hardware, and run the synthesizer
 # until its stop key is pressed.
 def main():
-    global oscillator
+    global oscillator, volume, output_gain, attack_time, release_time
 
     ap = argparse.ArgumentParser(description="Polyphonic MIDI synthesizer.")
     ap.add_argument(
@@ -347,6 +353,24 @@ def main():
         choices=["sine", "triangle", "square", "saw"],
         default="sine",
         help="output waveform (default: sine)",
+    )
+    ap.add_argument(
+        "--volume",
+        type=float,
+        default=volume,
+        help="master volume, 0-10 (default: %(default)g)",
+    )
+    ap.add_argument(
+        "--attack",
+        type=float,
+        default=attack_time * 1000.0,
+        help="note attack time in milliseconds (default: %(default)g)",
+    )
+    ap.add_argument(
+        "--release",
+        type=float,
+        default=release_time * 1000.0,
+        help="note release time in milliseconds (default: %(default)g)",
     )
     ap.add_argument(
         "--controller",
@@ -378,6 +402,12 @@ def main():
 
     # Oscillator selected at startup.
     oscillator = oscillators[args.wave]
+
+    # Apply volume and envelope settings from the command line.
+    volume = min(10.0, max(0.0, args.volume))
+    output_gain = (volume / 10.0) * 10.0 ** (single_note_dbfs / 20.0)
+    attack_time = max(0.0, args.attack) / 1000.0
+    release_time = max(0.0, args.release) / 1000.0
 
     # Open the controller.
     controller = open_controller(args)
