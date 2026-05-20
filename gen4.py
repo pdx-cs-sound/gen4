@@ -67,12 +67,12 @@ def sine_samples(t, f):
 # Return a rising sawtooth wave at frequency f over the
 # given sample times t.
 def saw_samples(t, f):
-    return (f * t) % 2.0 - 1.0
+    return 2.0 * ((f * t) % 1.0) - 1.0
 
 # Return a square wave at frequency f over the given sample
 # times t.
 def square_samples(t, f):
-    return np.sign((f * t) % 2.0 - 1.0)
+    return np.sign(((f * t) % 1.0) - 0.5)
 
 # Return a triangle wave at frequency f over the given
 # sample times t.
