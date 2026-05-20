@@ -36,8 +36,14 @@ attack_time = 0.020
 # Release time in seconds.
 release_time = 0.1
 
-# Fixed output gain. Leaves headroom and avoids clipping.
-output_gain = 0.25
+# Target output level for a single note, in dBFS. The
+# output gain is derived from this so that one note alone
+# peaks at this level. A `tanh` soft clipper in the callback
+# then keeps louder chords from ever clipping, while leaving
+# quiet playing essentially linear: this is the synth's
+# "compression" for many-note polyphony.
+single_note_dbfs = -9.0
+output_gain = float(np.arctanh(10.0 ** (single_note_dbfs / 20.0)))
 
 # Number of output channels. The synth mix is mono; it is
 # duplicated into this many channels so that the sound is
@@ -233,7 +239,11 @@ def output_callback(out_data, frame_count, time_info, status):
             if note_samples is not None:
                 samples += note_samples
 
-    samples *= output_gain
+    # Apply the output gain and soft-clip the mix. `tanh`
+    # never reaches 1.0, so any number of notes can sound at
+    # once without clipping; for a single note it is nearly
+    # linear, so quiet playing is essentially unaffected.
+    samples = np.tanh(output_gain * samples)
 
     # Duplicate the mono mix into each output channel of the
     # callback's output array. Write into the existing array
