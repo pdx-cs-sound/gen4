@@ -50,12 +50,17 @@ controllers = {
 sample_clock = 0
 
 # Generate an array of frame_count sample times starting at
-# sample_clock.
+# sample_clock. `endpoint=False` gives uniform 1/sample_rate
+# spacing: without it the last sample of each block would
+# land on the same instant as the first sample of the next,
+# duplicating a sample at every block boundary and adding
+# distortion at the block rate.
 def sample_times(frame_count):
     return np.linspace(
         sample_clock / sample_rate,
         (sample_clock + frame_count) / sample_rate,
         frame_count,
+        endpoint=False,
         dtype=np.float32,
     )
 
