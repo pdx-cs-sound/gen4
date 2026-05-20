@@ -9,6 +9,11 @@
 # Some of the code is adapted from the teaching synthesizers
 # `misy` (https://github.com/pdx-cs-sound/misy) and
 # `rhosy`.
+#
+# Sound generation (oscillators, `Note`, `output_callback`,
+# `handle_midi`) is kept free of hardware setup so that a
+# test harness can `import gen4` and drive it offline. The
+# hardware setup and main loop live in `main()`.
 
 import argparse, queue
 import mido
@@ -38,42 +43,6 @@ output_gain = 0.25
 controllers = {
     'USB Oxygen 8 v2 MIDI 1',
 }
-
-# Parse command-line arguments.
-ap = argparse.ArgumentParser(description="Monophonic MIDI synthesizer.")
-ap.add_argument(
-    "--wave",
-    choices=["sine", "triangle", "square", "saw"],
-    default="sine",
-    help="output waveform (default: sine)",
-)
-ap.add_argument(
-    "--controller",
-    help="MIDI input port name (default: auto-detect)",
-)
-ap.add_argument(
-    "--device",
-    help="audio output device, by name substring or index "
-         "(default: system default)",
-)
-ap.add_argument(
-    "--list-devices",
-    action="store_true",
-    help="list available audio devices and exit",
-)
-args = ap.parse_args()
-
-# List audio devices and exit, if requested.
-if args.list_devices:
-    print(sounddevice.query_devices())
-    exit(0)
-
-# Audio output device. An all-digit string is treated as a
-# device index; anything else is matched against device
-# names by `sounddevice`. None selects the system default.
-output_device = args.device
-if output_device is not None and output_device.isdigit():
-    output_device = int(output_device)
 
 # This count of the number of samples output so far is used
 # to make sure that waveforms are generated with the right
@@ -118,8 +87,9 @@ oscillators = {
     "saw": saw_samples,
 }
 
-# Oscillator selected at startup.
-oscillator = oscillators[args.wave]
+# Oscillator in use. The default is overridden by `main()`
+# from the command line; a test harness may set it directly.
+oscillator = oscillators["sine"]
 
 # Calculate frequency for a 12-tone equal-tempered Western
 # scale given MIDI note number.
@@ -262,31 +232,12 @@ def output_callback(out_data, frame_count, time_info, status):
     # Bump the sample clock for next cycle.
     sample_clock += frame_count
 
-# Open the MIDI controller (keyboard). Use the name given on
-# the command line, else auto-detect a known controller,
-# else fall back to a virtual input port.
-def open_controller():
-    inputs = mido.get_input_names()
-    if args.controller is not None:
-        return mido.open_input(args.controller)
-    for input_name in inputs:
-        for name in controllers:
-            if name in input_name:
-                print(f"using controller: {input_name}")
-                return mido.open_input(input_name)
-    print("No known controller — inputs found:")
-    for input_name in inputs:
-        print(' ', input_name)
-    print("Opening virtual input port 'gen4'")
-    return mido.open_input('gen4', virtual=True)
-
-# Block waiting for the controller (keyboard) to send a MIDI
-# message, then handle it. Return False if the MIDI message
-# wants the synthesizer to stop, True otherwise.
-def get_midi_event(controller):
-    # Block until a MIDI message is received.
-    mesg = controller.receive()
-
+# Handle one MIDI message, queueing any resulting state
+# change for the audio callback. Return False if the message
+# wants the synthesizer to stop, True otherwise. This is the
+# pure-logic half of MIDI handling, with no I/O, so a test
+# harness can call it directly with constructed messages.
+def handle_midi(mesg):
     # Select what to do based on message type.
     mesg_type = mesg.type
     # Special case: note on with velocity 0 indicates note
@@ -319,26 +270,96 @@ def get_midi_event(controller):
         print('unknown MIDI message', mesg)
     return True
 
-# Open the controller.
-controller = open_controller()
+# Block waiting for the controller (keyboard) to send a MIDI
+# message, then handle it. Return False if the synthesizer
+# should stop, True otherwise.
+def get_midi_event(controller):
+    return handle_midi(controller.receive())
 
-# Start audio playing. Must keep up with output from here on.
-output_stream = sounddevice.OutputStream(
-    samplerate=sample_rate,
-    channels=1,
-    blocksize=blocksize,
-    device=output_device,
-    callback=output_callback,
-)
-output_stream.start()
-print(f"gen4: playing {args.wave} wave — press Ctrl-C to stop")
+# Open the MIDI controller (keyboard). Use the name given on
+# the command line, else auto-detect a known controller,
+# else fall back to a virtual input port.
+def open_controller(args):
+    inputs = mido.get_input_names()
+    if args.controller is not None:
+        return mido.open_input(args.controller)
+    for input_name in inputs:
+        for name in controllers:
+            if name in input_name:
+                print(f"using controller: {input_name}")
+                return mido.open_input(input_name)
+    print("No known controller — inputs found:")
+    for input_name in inputs:
+        print(' ', input_name)
+    print("Opening virtual input port 'gen4'")
+    return mido.open_input('gen4', virtual=True)
 
-# Run the synthesizer until its stop key is pressed.
-try:
-    while get_midi_event(controller):
+# Parse arguments, open hardware, and run the synthesizer
+# until its stop key is pressed.
+def main():
+    global oscillator
+
+    ap = argparse.ArgumentParser(description="Polyphonic MIDI synthesizer.")
+    ap.add_argument(
+        "--wave",
+        choices=["sine", "triangle", "square", "saw"],
+        default="sine",
+        help="output waveform (default: sine)",
+    )
+    ap.add_argument(
+        "--controller",
+        help="MIDI input port name (default: auto-detect)",
+    )
+    ap.add_argument(
+        "--device",
+        help="audio output device, by name substring or index "
+             "(default: system default)",
+    )
+    ap.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="list available audio devices and exit",
+    )
+    args = ap.parse_args()
+
+    # List audio devices and exit, if requested.
+    if args.list_devices:
+        print(sounddevice.query_devices())
+        return
+
+    # Audio output device. An all-digit string is treated as
+    # a device index; anything else is matched against device
+    # names by `sounddevice`. None selects the system default.
+    output_device = args.device
+    if output_device is not None and output_device.isdigit():
+        output_device = int(output_device)
+
+    # Oscillator selected at startup.
+    oscillator = oscillators[args.wave]
+
+    # Open the controller.
+    controller = open_controller(args)
+
+    # Start audio playing. Must keep up with output from here on.
+    output_stream = sounddevice.OutputStream(
+        samplerate=sample_rate,
+        channels=1,
+        blocksize=blocksize,
+        device=output_device,
+        callback=output_callback,
+    )
+    output_stream.start()
+    print(f"gen4: playing {args.wave} wave — press Ctrl-C to stop")
+
+    # Run the synthesizer until its stop key is pressed.
+    try:
+        while get_midi_event(controller):
+            pass
+    except KeyboardInterrupt:
         pass
-except KeyboardInterrupt:
-    pass
 
-output_stream.stop()
-output_stream.close()
+    output_stream.stop()
+    output_stream.close()
+
+if __name__ == "__main__":
+    main()
