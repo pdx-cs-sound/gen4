@@ -16,19 +16,14 @@
 #
 # `--latency-test` instead measures real audio round-trip
 # latency: it plays a marker and recaptures it through a
-# PipeWire monitor source, so it needs a sink whose monitor
-# can be captured. Create a null sink once --
+# PipeWire monitor source. It creates a temporary null sink
+# for the capture and removes it again afterward, so it is
+# self-contained -- it needs only PipeWire/PulseAudio and the
+# `pactl` tool:
 #
-#     pactl load-module module-null-sink sink_name=gen4test \
-#         sink_properties=device.description=gen4_test
-#
-# (or persist it with a PipeWire config) -- then point
-# libpulse at the sink and its monitor and run the test:
-#
-#     PULSE_SINK=gen4test PULSE_SOURCE=gen4test.monitor \
-#         python harness.py --latency-test
+#     python harness.py --latency-test
 
-import os, sys, wave
+import os, subprocess, sys, time, wave
 import mido
 import numpy as np
 
@@ -138,15 +133,41 @@ def write_wav(name, audio, sample_rate=48000):
 
 # ---- live latency measurement -----------------------------
 
+# Create a private PipeWire null sink, route libpulse at it,
+# and return its name and pactl module id. The caller must
+# unload the module when done.
+def open_null_sink():
+    sink = f"gen4_harness_{os.getpid()}"
+    loaded = subprocess.run(
+        ["pactl", "load-module", "module-null-sink",
+         f"sink_name={sink}",
+         f"sink_properties=device.description={sink}"],
+        capture_output=True, text=True)
+    if loaded.returncode != 0:
+        raise RuntimeError(loaded.stderr.strip() or "pactl load-module failed")
+    os.environ["PULSE_SINK"] = sink
+    os.environ["PULSE_SOURCE"] = sink + ".monitor"
+    time.sleep(0.2)            # let the sink and monitor register
+    return sink, loaded.stdout.strip()
+
 # Measure audio output round-trip latency. Plays a short
 # noise-burst marker through an output stream configured like
-# the synth's, recaptures it from a PipeWire monitor source,
-# and times the delay by cross-correlation. PULSE_SINK and
-# PULSE_SOURCE must point at a sink and its monitor (see the
-# file header); the streams use PortAudio's `pulse` device.
+# the synth's, recaptures it from the monitor of a temporary
+# null sink, and times the delay by cross-correlation. The
+# sink is created and removed automatically, so this needs
+# only PipeWire/PulseAudio and the `pactl` tool.
 def latency_test(sample_rate=48000, blocksize=128,
                  latency_blocks=2.0, runs=8):
     import sounddevice as sd
+
+    try:
+        sink, module_id = open_null_sink()
+    except FileNotFoundError:
+        print("  --latency-test needs PipeWire/PulseAudio (pactl not found)")
+        return
+    except RuntimeError as e:
+        print(f"  could not create the test sink: {e}")
+        return
 
     latency = latency_blocks * blocksize / sample_rate
     rng = np.random.default_rng(0)
@@ -160,30 +181,33 @@ def latency_test(sample_rate=48000, blocksize=128,
           f"latency hint {latency * 1000:.1f} ms")
 
     results = []
-    for run in range(runs):
-        rec = sd.playrec(marker, samplerate=sample_rate,
-                         channels=gen4.output_channels,
-                         blocksize=blocksize, latency=latency,
-                         device='pulse')
-        sd.wait()
-        captured = rec[:, 0].astype(np.float64)
-        # The first run warms up the streams; skip its timing.
-        if run == 0:
-            continue
-        # Cross-correlate the capture against the marker; a
-        # genuine hit is a peak far above the correlation's
-        # own median. Reject silent or unconvincing runs.
-        correlation = np.abs(np.correlate(
-            captured, burst.astype(np.float64), mode='valid'))
-        peak = int(np.argmax(correlation))
-        if (np.sqrt(np.mean(captured ** 2)) < 1e-5
-                or correlation[peak] < 8.0 * np.median(correlation)):
-            continue
-        results.append((peak - mark_at) / sample_rate * 1000.0)
+    try:
+        for run in range(runs):
+            rec = sd.playrec(marker, samplerate=sample_rate,
+                             channels=gen4.output_channels,
+                             blocksize=blocksize, latency=latency,
+                             device='pulse')
+            sd.wait()
+            captured = rec[:, 0].astype(np.float64)
+            # The first run warms up the streams; skip its timing.
+            if run == 0:
+                continue
+            # Cross-correlate the capture against the marker; a
+            # genuine hit is a peak far above the correlation's
+            # own median. Reject silent or unconvincing runs.
+            correlation = np.abs(np.correlate(
+                captured, burst.astype(np.float64), mode='valid'))
+            peak = int(np.argmax(correlation))
+            if (np.sqrt(np.mean(captured ** 2)) < 1e-5
+                    or correlation[peak] < 8.0 * np.median(correlation)):
+                continue
+            results.append((peak - mark_at) / sample_rate * 1000.0)
+    finally:
+        subprocess.run(["pactl", "unload-module", module_id],
+                       capture_output=True)
 
     if len(results) < 3:
-        print("  no clean measurement — is PULSE_SOURCE set to a "
-              "monitor source? (see the file header)")
+        print("  no clean measurement from the monitor capture")
         return
 
     results.sort()
