@@ -48,6 +48,9 @@ Options:
 - `--device DEVICE` selects the audio output device, by
   name substring or numeric index. If omitted, the system
   default output is used.
+- `--latency BLOCKS` sets the audio output buffering, in
+  blocks (default: `2`). Two blocks is plenty on a capable
+  machine; raise it if you hear underruns.
 - `--list-devices` prints the available audio devices and
   exits.
 

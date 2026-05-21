@@ -444,6 +444,13 @@ def main():
              "(default: system default)",
     )
     ap.add_argument(
+        "--latency",
+        type=float,
+        default=2.0,
+        help="audio output latency, in blocks; two blocks is "
+             "plenty on a capable machine (default: %(default)g)",
+    )
+    ap.add_argument(
         "--list-devices",
         action="store_true",
         help="list available audio devices and exit",
@@ -461,6 +468,11 @@ def main():
     output_device = args.device
     if output_device is not None and output_device.isdigit():
         output_device = int(output_device)
+
+    # Requested output latency, in seconds. Passed to the
+    # stream as a hint; sounddevice's own default ("high")
+    # buffers far more than a capable machine needs.
+    output_latency = max(1.0, args.latency) * blocksize / sample_rate
 
     # Oscillator selected at startup.
     oscillator = oscillators[args.wave]
@@ -481,10 +493,13 @@ def main():
         channels=output_channels,
         blocksize=blocksize,
         device=output_device,
+        latency=output_latency,
         callback=output_callback,
     )
     output_stream.start()
-    print(f"gen4: playing {args.wave} wave — press Ctrl-C to stop")
+    print(f"gen4: playing {args.wave} wave at "
+          f"{output_stream.latency * 1000:.1f} ms latency "
+          f"— press Ctrl-C to stop")
 
     # Run the synthesizer until its stop key is pressed.
     try:
