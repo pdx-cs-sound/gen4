@@ -158,9 +158,12 @@ playing_notes = []
 
 # Representation of a note currently being played.
 class Note:
-    def __init__(self, key):
+    def __init__(self, key, velocity):
         self.key = key
         self.frequency = key_to_freq(key)
+        # MIDI velocity (1-127) scales the note amplitude
+        # linearly: a softly struck key plays quieter.
+        self.amplitude = velocity / 127.0
         self.attack_time_remaining = attack_time
         self.release_time_remaining = None
         self.playing = True
@@ -182,8 +185,8 @@ class Note:
 
         frame_count = len(t)
 
-        # Pick and generate the waveform.
-        samples = oscillator(t, self.frequency)
+        # Pick and generate the waveform, scaled to velocity.
+        samples = oscillator(t, self.frequency) * self.amplitude
 
         if self.release_time_remaining is not None:
             # Do release part of AR envelope.
@@ -266,7 +269,7 @@ def output_callback(out_data, frame_count, time_info, status):
     while not command_queue.empty():
         mesg_type, mesg = command_queue.get()
         if mesg_type == 'note_on':
-            playing_notes.append(Note(mesg.note))
+            playing_notes.append(Note(mesg.note, mesg.velocity))
         elif mesg_type == 'note_off':
             # Release every held (not yet released) note on
             # this key. Notes already in release are left
