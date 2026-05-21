@@ -1,32 +1,31 @@
-# gen4 test harness: drive the synth with MIDI offline,
-# capture its audio output, and inspect the waveforms.
+# gen4 test harness: drive the synth offline and analyze its
+# output numerically.
 # Bart Massey 2026
 
 # This harness imports `gen4` and exercises its real audio
 # callback (`gen4.output_callback`) and MIDI handler
 # (`gen4.handle_midi`) without opening any hardware. MIDI
-# events are delivered on a schedule, the resulting audio is
-# captured block by block, and the result is written to WAV
-# files and PNG plots for inspection.
+# events are delivered on a schedule, the audio is captured
+# block by block into a NumPy array, and that array is
+# analyzed directly — there are no intermediate files and no
+# dependencies beyond NumPy. An optional WAV dump (`--wav`)
+# is provided only so a rendered scenario can be listened to
+# by ear; the analysis itself never needs it.
 #
-# Run directly to render a standard set of scenarios:
+# Run directly for a standard analysis report:
 #
-#     python harness.py
-#
-# Outputs land in the `test-output/` directory.
+#     python harness.py [--wav]
 
-import os
+import os, sys, wave
 import mido
 import numpy as np
-import scipy.io.wavfile as wav
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 import gen4
 
-# Where rendered WAV and PNG files are written.
+# Directory for optional WAV dumps.
 output_dir = "test-output"
+
+# ---- driving the synth ------------------------------------
 
 # Build the note_on / note_off event pair for a single note.
 # `start` and `duration` are in seconds. Returns a list of
@@ -61,7 +60,8 @@ def render(events, seconds, wave="sine", sample_rate=48000, blocksize=128):
         # Deliver every event whose time has arrived by the
         # start of this block.
         block_time = b * blocksize / sample_rate
-        while event_index < len(events) and events[event_index][0] <= block_time:
+        while (event_index < len(events)
+               and events[event_index][0] <= block_time):
             gen4.handle_midi(events[event_index][1])
             event_index += 1
 
@@ -71,98 +71,96 @@ def render(events, seconds, wave="sine", sample_rate=48000, blocksize=128):
 
     return audio
 
-# Write captured audio to a WAV file.
+# ---- analysis ---------------------------------------------
+
+# Estimate the fundamental frequency, in Hz, from the FFT
+# peak. Parabolic interpolation of the peak and its two
+# neighbours gives sub-bin accuracy, so the result is not
+# quantized to the FFT bin spacing.
+def measure_frequency(audio, sample_rate=48000):
+    windowed = audio.astype(np.float64) * np.hanning(len(audio))
+    spectrum = np.abs(np.fft.rfft(windowed))
+    k = int(np.argmax(spectrum))
+    if 0 < k < len(spectrum) - 1:
+        y0, y1, y2 = spectrum[k - 1], spectrum[k], spectrum[k + 1]
+        denom = y0 - 2.0 * y1 + y2
+        if denom != 0.0:
+            k += 0.5 * (y0 - y2) / denom
+    return k * sample_rate / len(audio)
+
+# Return the percentage of spectral energy that is not within
+# a few bins of any of the given fundamental frequencies.
+# For a sine note or a chord of sines this is the distortion;
+# for harmonically rich waveforms it also counts the
+# waveform's own harmonics, so compare to a reference render.
+def nonfundamental_energy(audio, fundamentals, sample_rate=48000):
+    windowed = audio.astype(np.float64) * np.hanning(len(audio))
+    power = np.abs(np.fft.rfft(windowed)) ** 2
+    n = len(audio)
+    fundamental = 0.0
+    for f in fundamentals:
+        b = int(round(f * n / sample_rate))
+        fundamental += np.sum(power[max(0, b - 3):b + 4])
+    return 100.0 * (1.0 - fundamental / np.sum(power))
+
+# Return the peak and RMS amplitude of the samples.
+def levels(audio):
+    peak = float(np.max(np.abs(audio)))
+    rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+    return peak, rms
+
+# ---- WAV dump (optional, for listening) -------------------
+
+# Write samples to a 16-bit mono WAV file, using only the
+# standard library.
 def write_wav(name, audio, sample_rate=48000):
+    os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, name)
-    wav.write(path, sample_rate, audio.astype(np.float32))
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype('<i2')
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm.tobytes())
     print(f"  wrote {path}")
 
-# Plot the full waveform plus a zoomed segment, marking the
-# audio block boundaries so block-boundary anomalies stand
-# out. Saves a PNG.
-def plot(name, audio, sample_rate=48000, blocksize=128,
-         zoom_start=0.10, zoom_len=600):
-    path = os.path.join(output_dir, name)
-    t = np.arange(len(audio)) / sample_rate
+# ---- report -----------------------------------------------
 
-    fig, (full_ax, zoom_ax) = plt.subplots(2, 1, figsize=(11, 6))
-
-    full_ax.plot(t, audio, linewidth=0.5)
-    full_ax.set_title(f"{name}: full waveform")
-    full_ax.set_xlabel("time (s)")
-    full_ax.set_ylabel("amplitude")
-
-    # Zoomed view with block boundaries marked.
-    z0 = int(zoom_start * sample_rate)
-    z1 = min(z0 + zoom_len, len(audio))
-    idx = np.arange(z0, z1)
-    zoom_ax.plot(idx, audio[z0:z1], marker='.', markersize=2, linewidth=0.7)
-    for boundary in range((z0 // blocksize + 1) * blocksize, z1, blocksize):
-        zoom_ax.axvline(boundary, color='red', alpha=0.3, linewidth=0.8)
-    zoom_ax.set_title(
-        f"{name}: zoom (samples {z0}–{z1}, red = block boundaries)")
-    zoom_ax.set_xlabel("sample index")
-    zoom_ax.set_ylabel("amplitude")
-
-    fig.tight_layout()
-    fig.savefig(path, dpi=100)
-    plt.close(fig)
-    print(f"  wrote {path}")
-
-# Inspect a sustained-note render for waveform anomalies.
-# Reports the nominal vs. measured frequency and counts
-# block boundaries where the waveform appears discontinuous.
-def diagnose(audio, key, sample_rate=48000, blocksize=128):
+# Render a standard set of scenarios and print the analysis.
+def main():
+    dump = "--wav" in sys.argv
+    sr = 48000
+    key = 69  # A4, 440 Hz
     nominal = gen4.key_to_freq(key)
 
-    # Measure frequency from the FFT peak over the steady
-    # portion of the note (skip the attack).
-    steady = audio[2000:]
-    window = steady * np.hanning(len(steady))
-    spectrum = np.abs(np.fft.rfft(window))
-    freqs = np.fft.rfftfreq(len(window), 1.0 / sample_rate)
-    measured = freqs[np.argmax(spectrum)]
-    cents = 1200 * np.log2(measured / nominal)
-
-    print(f"  nominal freq:  {nominal:8.3f} Hz")
-    print(f"  measured freq: {measured:8.3f} Hz  ({cents:+.1f} cents)")
-
-    # A continuous waveform has a smooth slope. At a block
-    # boundary, compare the step across the boundary with the
-    # steps just inside each block; a boundary whose step is
-    # wildly out of line signals a discontinuity.
-    diffs = np.diff(audio)
-    glitches = 0
-    for boundary in range(blocksize, len(audio) - 1, blocksize):
-        across = abs(diffs[boundary - 1])
-        inside = abs(diffs[boundary - 2]) + abs(diffs[boundary])
-        if across > 4 * inside + 1e-6:
-            glitches += 1
-    nboundaries = (len(audio) - 1) // blocksize
-    print(f"  block-boundary glitches: {glitches} / {nboundaries}")
-
-# Render the standard scenario set.
-def main():
-    os.makedirs(output_dir, exist_ok=True)
-    sr, bs = 48000, gen4.blocksize
-
-    # One sustained note per waveform.
-    key = 69  # A4, 440 Hz
+    # Each waveform: a sustained note. Report measured pitch
+    # and level over the steady portion (past the attack).
+    print("sustained A4 by waveform:")
     for wave in ("sine", "triangle", "square", "saw"):
-        print(f"[{wave}] sustained A4")
-        audio = render(note(key, 0.05, 0.8), seconds=1.0, wave=wave,
-                       sample_rate=sr, blocksize=bs)
-        write_wav(f"{wave}.wav", audio, sr)
-        plot(f"{wave}.png", audio, sr, bs)
-        diagnose(audio, key, sr, bs)
+        audio = render(note(key, 0.0, 10.0), seconds=2.0, wave=wave)
+        steady = audio[8000:]
+        freq = measure_frequency(steady, sr)
+        cents = 1200.0 * np.log2(freq / nominal)
+        peak, rms = levels(steady)
+        print(f"  {wave:8}: {freq:8.3f} Hz ({cents:+.2f} cents)"
+              f"   peak {peak:.4f}  rms {rms:.4f}")
+        if dump:
+            write_wav(f"{wave}.wav", audio, sr)
 
-    # A three-note chord, sine.
-    print("[chord] C-E-G triad, sine")
-    events = note(60, 0.05, 0.8) + note(64, 0.05, 0.8) + note(67, 0.05, 0.8)
-    audio = render(events, seconds=1.0, wave="sine",
-                   sample_rate=sr, blocksize=bs)
-    write_wav("chord.wav", audio, sr)
-    plot("chord.png", audio, sr, bs)
+    # Distortion: a sine note and a sine chord (for sines,
+    # non-fundamental energy is the distortion directly).
+    print("\ndistortion (non-fundamental energy):")
+    audio = render(note(key, 0.0, 10.0), seconds=2.0, wave="sine")
+    print(f"  single sine A4 : "
+          f"{nonfundamental_energy(audio[8000:], [nominal], sr):.4f} %")
+    chord_keys = [60, 64, 67]
+    events = sum([note(k, 0.0, 10.0) for k in chord_keys], [])
+    audio = render(events, seconds=2.0, wave="sine")
+    funds = [gen4.key_to_freq(k) for k in chord_keys]
+    print(f"  C-E-G sine chord: "
+          f"{nonfundamental_energy(audio[8000:], funds, sr):.4f} %")
+    if dump:
+        write_wav("chord.wav", audio, sr)
 
 if __name__ == "__main__":
     main()

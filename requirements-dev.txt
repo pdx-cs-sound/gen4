@@ -1,4 +1,0 @@
-# Extra dependencies for the test harness (harness.py).
--r requirements.txt
-scipy
-matplotlib
