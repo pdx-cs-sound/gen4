@@ -485,7 +485,8 @@ def main():
     # Audio block size in samples.
     blocksize = max(1, args.block)
 
-    # Requested output latency, in seconds. Passed to the
+    # Requested output latency, in seconds. `args.latency` is
+    # in blocks (min one block); converted here. Passed to the
     # stream as a hint; sounddevice's own default ("high")
     # buffers far more than a capable machine needs.
     output_latency = max(1.0, args.latency) * blocksize / sample_rate
