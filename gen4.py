@@ -400,7 +400,7 @@ def open_controller(args):
 # until its stop key is pressed.
 def main():
     global oscillator, volume_position, output_gain
-    global attack_time, release_time, clip_hardness
+    global attack_time, release_time, clip_hardness, blocksize
 
     ap = argparse.ArgumentParser(description="Polyphonic MIDI synthesizer.")
     ap.add_argument(
@@ -444,6 +444,12 @@ def main():
              "(default: system default)",
     )
     ap.add_argument(
+        "--block",
+        type=int,
+        default=blocksize,
+        help="audio block size in samples (default: %(default)g)",
+    )
+    ap.add_argument(
         "--latency",
         type=float,
         default=2.0,
@@ -468,6 +474,9 @@ def main():
     output_device = args.device
     if output_device is not None and output_device.isdigit():
         output_device = int(output_device)
+
+    # Audio block size in samples.
+    blocksize = max(1, args.block)
 
     # Requested output latency, in seconds. Passed to the
     # stream as a hint; sounddevice's own default ("high")
