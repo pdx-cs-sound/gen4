@@ -42,7 +42,7 @@ release_time = 0.050
 # polyphony: a fixed per-voice level plus headroom and a
 # master volume, so more notes are simply louder, the way an
 # acoustic instrument behaves.
-single_note_dbfs = -12.0
+single_note_dbfs = -16.0
 
 # The volume control is dB-linear and spans this many dB,
 # from full volume (`single_note_dbfs`) down toward silence.
@@ -77,11 +77,12 @@ volume_knob_last = None
 
 # Soft-clip hardness: the exponent k in the variable-hardness
 # clipper x / (1 + |x|^k)^(1/k). Low k bends gently at every
-# level (no knee); high k approaches a hard knee. A moderate
-# value softens the bend so an overloaded chord breathes
-# rather than clicking at its beat frequency. Overridable on
-# the command line via `--clip-hardness`.
-clip_hardness = 3.0
+# level; high k stays near-linear through the normal playing
+# range and bends only near full scale, so the clip acts as a
+# safety net for genuine overload rather than coloring normal
+# chords. Overridable on the command line via
+# `--clip-hardness`.
+clip_hardness = 8.0
 
 # Number of output channels. The synth mix is mono; it is
 # duplicated into this many channels so that the sound is
