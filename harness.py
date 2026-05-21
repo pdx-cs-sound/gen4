@@ -12,9 +12,21 @@
 # is provided only so a rendered scenario can be listened to
 # by ear; the analysis itself never needs it.
 #
-# Run directly for a standard analysis report:
-#
 #     python harness.py [--wav]
+#
+# `--latency-test` instead measures real audio round-trip
+# latency: it plays a marker and recaptures it through a
+# PipeWire monitor source, so it needs a sink whose monitor
+# can be captured. Create a null sink once --
+#
+#     pactl load-module module-null-sink sink_name=gen4test \
+#         sink_properties=device.description=gen4_test
+#
+# (or persist it with a PipeWire config) -- then point
+# libpulse at the sink and its monitor and run the test:
+#
+#     PULSE_SINK=gen4test PULSE_SOURCE=gen4test.monitor \
+#         python harness.py --latency-test
 
 import os, sys, wave
 import mido
@@ -124,10 +136,73 @@ def write_wav(name, audio, sample_rate=48000):
         w.writeframes(pcm.tobytes())
     print(f"  wrote {path}")
 
+# ---- live latency measurement -----------------------------
+
+# Measure audio output round-trip latency. Plays a short
+# noise-burst marker through an output stream configured like
+# the synth's, recaptures it from a PipeWire monitor source,
+# and times the delay by cross-correlation. PULSE_SINK and
+# PULSE_SOURCE must point at a sink and its monitor (see the
+# file header); the streams use PortAudio's `pulse` device.
+def latency_test(sample_rate=48000, blocksize=128,
+                 latency_blocks=2.0, runs=8):
+    import sounddevice as sd
+
+    latency = latency_blocks * blocksize / sample_rate
+    rng = np.random.default_rng(0)
+    burst = (rng.standard_normal(512) * 0.3).astype(np.float32)
+    n = sample_rate                       # one-second buffer
+    mark_at = n // 3
+    marker = np.zeros((n, gen4.output_channels), dtype=np.float32)
+    marker[mark_at:mark_at + len(burst), :] = burst[:, None]
+
+    print(f"latency test — blocksize {blocksize}, "
+          f"latency hint {latency * 1000:.1f} ms")
+
+    results = []
+    for run in range(runs):
+        rec = sd.playrec(marker, samplerate=sample_rate,
+                         channels=gen4.output_channels,
+                         blocksize=blocksize, latency=latency,
+                         device='pulse')
+        sd.wait()
+        captured = rec[:, 0].astype(np.float64)
+        # The first run warms up the streams; skip its timing.
+        if run == 0:
+            continue
+        # Cross-correlate the capture against the marker; a
+        # genuine hit is a peak far above the correlation's
+        # own median. Reject silent or unconvincing runs.
+        correlation = np.abs(np.correlate(
+            captured, burst.astype(np.float64), mode='valid'))
+        peak = int(np.argmax(correlation))
+        if (np.sqrt(np.mean(captured ** 2)) < 1e-5
+                or correlation[peak] < 8.0 * np.median(correlation)):
+            continue
+        results.append((peak - mark_at) / sample_rate * 1000.0)
+
+    if len(results) < 3:
+        print("  no clean measurement — is PULSE_SOURCE set to a "
+              "monitor source? (see the file header)")
+        return
+
+    results.sort()
+    round_trip = results[len(results) // 2]
+    print(f"  round-trip latency: {round_trip:.2f} ms  "
+          f"(median of {len(results)}, range "
+          f"{results[0]:.2f}-{results[-1]:.2f})")
+    # The round trip is the output path plus the monitor
+    # capture path; halving it estimates the output latency.
+    print(f"  one-way estimate:   {round_trip / 2:.2f} ms")
+
 # ---- report -----------------------------------------------
 
 # Render a standard set of scenarios and print the analysis.
 def main():
+    if "--latency-test" in sys.argv:
+        latency_test(blocksize=gen4.blocksize)
+        return
+
     dump = "--wav" in sys.argv
     sr = 48000
     key = 69  # A4, 440 Hz
