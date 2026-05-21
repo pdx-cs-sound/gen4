@@ -75,13 +75,13 @@ volume_knob_engaged = False
 # CC#7 has arrived; used to detect that sweep.
 volume_knob_last = None
 
-# Soft-clip knee. The summed mix passes through unchanged
-# below this level; above it, peaks are smoothly rounded
-# toward full scale instead of hard-clipping. This is the
-# many-note safety net — a memoryless waveshaper, so it has
-# no time constants, no latency and no state, and therefore
-# cannot click or pump.
-soft_clip_knee = 0.75
+# Soft-clip hardness: the exponent k in the variable-hardness
+# clipper x / (1 + |x|^k)^(1/k). Low k bends gently at every
+# level (no knee); high k approaches a hard knee. A moderate
+# value softens the bend so an overloaded chord breathes
+# rather than clicking at its beat frequency. Overridable on
+# the command line via `--clip-hardness`.
+clip_hardness = 3.0
 
 # Number of output channels. The synth mix is mono; it is
 # duplicated into this many channels so that the sound is
@@ -233,19 +233,17 @@ class Note:
 
         return samples
 
-# Memoryless soft clipper. Passes |samples| <= soft_clip_knee
-# through unchanged; above the knee, smoothly compresses the
-# signal toward +/-1 so the output never exceeds full scale.
-# The mapping is continuous in value and slope at the knee.
-# Being memoryless (each output sample depends only on the
-# matching input sample) it adds no latency and cannot click.
+# Memoryless soft clipper, the variable-hardness curve
+# x / (1 + |x|^k)^(1/k). It bends smoothly at every level, so
+# there is no linear region and thus no knee to gate
+# distortion on and off, and it asymptotes to +/-1, so the
+# output never reaches full scale. Being memoryless (each
+# output sample depends only on the matching input sample) it
+# adds no latency and no state.
 def soft_clip(samples):
-    knee = soft_clip_knee
-    span = 1.0 - knee
+    k = clip_hardness
     magnitude = np.abs(samples)
-    excess = np.maximum(magnitude - knee, 0.0)
-    shaped = np.sign(samples) * (knee + span * np.tanh(excess / span))
-    return np.where(magnitude > knee, shaped, samples)
+    return samples / (1.0 + magnitude ** k) ** (1.0 / k)
 
 # Queue of MIDI messages for state changes, passed from the
 # main thread to the audio callback.
@@ -407,7 +405,8 @@ def open_controller(args):
 # Parse arguments, open hardware, and run the synthesizer
 # until its stop key is pressed.
 def main():
-    global oscillator, volume_position, output_gain, attack_time, release_time
+    global oscillator, volume_position, output_gain
+    global attack_time, release_time, clip_hardness
 
     ap = argparse.ArgumentParser(description="Polyphonic MIDI synthesizer.")
     ap.add_argument(
@@ -433,6 +432,13 @@ def main():
         type=float,
         default=release_time * 1000.0,
         help="note release time in milliseconds (default: %(default)g)",
+    )
+    ap.add_argument(
+        "--clip-hardness",
+        type=float,
+        default=clip_hardness,
+        help="soft-clip hardness exponent; low is softer "
+             "(default: %(default)g)",
     )
     ap.add_argument(
         "--controller",
@@ -470,6 +476,7 @@ def main():
     output_gain = volume_to_gain(volume_position)
     attack_time = max(0.0, args.attack) / 1000.0
     release_time = max(0.0, args.release) / 1000.0
+    clip_hardness = min(20.0, max(1.0, args.clip_hardness))
 
     # Open the controller.
     controller = open_controller(args)
