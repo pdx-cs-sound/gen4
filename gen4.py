@@ -15,7 +15,7 @@
 # test harness can `import gen4` and drive it offline. The
 # hardware setup and main loop live in `main()`.
 
-import argparse, queue
+import argparse, queue, time
 import mido
 import numpy as np
 import sounddevice
@@ -249,10 +249,17 @@ def soft_clip(samples):
 # main thread to the audio callback.
 command_queue = queue.SimpleQueue()
 
+# Set true the first time the audio callback runs. `main()`
+# checks it to catch a stream that opened but never started.
+callback_fired = False
+
 # This callback is called by `sounddevice` to get some
 # samples to output. It's the heart of sound generation in
 # the synth.
 def output_callback(out_data, frame_count, time_info, status):
+    global callback_fired
+    callback_fired = True
+
     # A non-None status indicates that something has
     # happened with sound output that shouldn't have. This
     # is almost always an underrun due to generating samples
@@ -506,6 +513,16 @@ def main():
         callback=output_callback,
     )
     output_stream.start()
+
+    # Confirm the stream actually runs. On some audio backends
+    # a too-small --block opens and reports active but never
+    # calls the callback, leaving the synth silently dead.
+    time.sleep(0.25)
+    if not callback_fired:
+        print("audio stream did not start — try a different --block size")
+        output_stream.close()
+        return
+
     print(f"gen4: playing {args.wave} wave at "
           f"{output_stream.latency * 1000:.1f} ms latency "
           f"— press Ctrl-C to stop")
