@@ -46,7 +46,6 @@ def render(events, seconds, wave="sine", sample_rate=48000, blocksize=128):
     gen4.blocksize = blocksize
     gen4.oscillator = gen4.oscillators[wave]
     gen4.log_notes = False
-    gen4.sample_clock = 0
     gen4.playing_notes.clear()
     while not gen4.command_queue.empty():
         gen4.command_queue.get()

@@ -94,45 +94,28 @@ controllers = {
     'USB Oxygen 8 v2 MIDI 1',
 }
 
-# This count of the number of samples output so far is used
-# to make sure that waveforms are generated with the right
-# phase across blocks.
-sample_clock = 0
+# The oscillators below are bare periodic shape functions of
+# `phase`, which must be in [0, 1) — one full cycle. `Note`
+# keeps a phase accumulator and hands them an already-wrapped
+# phase array, so the phase never grows large and never loses
+# precision however long the synth runs, and the sine's
+# argument always stays in [0, 2*pi).
 
-# Generate an array of frame_count sample times starting at
-# sample_clock. `endpoint=False` gives uniform 1/sample_rate
-# spacing: without it the last sample of each block would
-# land on the same instant as the first sample of the next,
-# duplicating a sample at every block boundary and adding
-# distortion at the block rate.
-def sample_times(frame_count):
-    return np.linspace(
-        sample_clock / sample_rate,
-        (sample_clock + frame_count) / sample_rate,
-        frame_count,
-        endpoint=False,
-        dtype=np.float32,
-    )
+# Return a sine wave for the given phases (cycles, [0, 1)).
+def sine_samples(phase):
+    return np.sin(2.0 * np.pi * phase)
 
-# Return a sine wave at frequency f over the given sample
-# times t.
-def sine_samples(t, f):
-    return np.sin(2 * np.pi * f * t)
+# Return a rising sawtooth wave for the given phases.
+def saw_samples(phase):
+    return 2.0 * phase - 1.0
 
-# Return a rising sawtooth wave at frequency f over the
-# given sample times t.
-def saw_samples(t, f):
-    return 2.0 * ((f * t) % 1.0) - 1.0
+# Return a square wave for the given phases.
+def square_samples(phase):
+    return np.sign(phase - 0.5)
 
-# Return a square wave at frequency f over the given sample
-# times t.
-def square_samples(t, f):
-    return np.sign(((f * t) % 1.0) - 0.5)
-
-# Return a triangle wave at frequency f over the given
-# sample times t.
-def triangle_samples(t, f):
-    return 2.0 * np.abs(2.0 * ((f * t) % 1.0) - 1.0) - 1.0
+# Return a triangle wave for the given phases.
+def triangle_samples(phase):
+    return 2.0 * np.abs(2.0 * phase - 1.0) - 1.0
 
 # Available oscillators, keyed by waveform name.
 oscillators = {
@@ -165,6 +148,11 @@ class Note:
         # MIDI velocity (1-127) scales the note amplitude
         # linearly: a softly struck key plays quieter.
         self.amplitude = velocity / 127.0
+        # Phase accumulator, in cycles. `phase` is kept in
+        # [0, 1) so it never grows large; `phase_increment`
+        # is how far it advances per output sample.
+        self.phase = 0.0
+        self.phase_increment = self.frequency / sample_rate
         self.attack_time_remaining = attack_time
         self.release_time_remaining = None
         self.playing = True
@@ -177,17 +165,25 @@ class Note:
     def remove(self):
         playing_notes.remove(self)
 
-    # Accept a time linspace to generate samples in. Return
-    # that many samples of the note being played, or None if
-    # the note is over.
-    def samples(self, t):
+    # Generate frame_count samples of the note being played,
+    # or None if the note is over.
+    def samples(self, frame_count):
         if not self.playing:
             return None
 
-        frame_count = len(t)
+        # Per-sample phases for this block, wrapped to [0, 1),
+        # then advance the accumulator past the block. Note
+        # that wrapping keeps both the array and the
+        # accumulator small, so phase never loses precision.
+        phase = (
+            self.phase + np.arange(frame_count) * self.phase_increment
+        ) % 1.0
+        self.phase = (
+            self.phase + frame_count * self.phase_increment
+        ) % 1.0
 
         # Pick and generate the waveform, scaled to velocity.
-        samples = oscillator(t, self.frequency) * self.amplitude
+        samples = oscillator(phase) * self.amplitude
 
         if self.release_time_remaining is not None:
             # Do release part of AR envelope.
@@ -257,8 +253,6 @@ command_queue = queue.SimpleQueue()
 # samples to output. It's the heart of sound generation in
 # the synth.
 def output_callback(out_data, frame_count, time_info, status):
-    global sample_clock
-
     # A non-None status indicates that something has
     # happened with sound output that shouldn't have. This
     # is almost always an underrun due to generating samples
@@ -289,11 +283,10 @@ def output_callback(out_data, frame_count, time_info, status):
     samples = np.zeros(frame_count, dtype=np.float32)
 
     if playing_notes:
-        t = sample_times(frame_count)
         # Iterate over a snapshot: a played-out note removes
         # itself from `playing_notes` during `samples()`.
         for note in list(playing_notes):
-            note_samples = note.samples(t)
+            note_samples = note.samples(frame_count)
             if note_samples is not None:
                 samples += note_samples
 
@@ -306,9 +299,6 @@ def output_callback(out_data, frame_count, time_info, status):
     # rather than accidentally copying over the parameter.
     for channel in range(output_channels):
         out_data[:, channel] = samples
-
-    # Bump the sample clock for next cycle.
-    sample_clock += frame_count
 
 # Handle one MIDI message, queueing any resulting state
 # change for the audio callback. Return False if the message
